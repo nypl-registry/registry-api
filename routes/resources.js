@@ -1,66 +1,101 @@
 var gatherParams = require('../lib/util').gatherParams
 
+const config = require('config')
+
+const VER = config.get('major_version')
+
 module.exports = function (app) {
   app.all('*', function (req, res, next) {
     res.header('Access-Control-Allow-Origin', '*')
-    res.header('Access-Control-Allow-Methods', 'PUT, GET, POST, DELETE, OPTIONS')
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS')
     res.header('Access-Control-Allow-Headers', 'Content-Type')
+    app.baseUrl = `http${req.secure ? 's' : ''}://${req.headers.host}/api/v${VER}/discovery`
     next()
   })
 
-  var standardParams = ['page', 'per_page', 'value', 'q', 'expandContext']
+  var standardParams = ['page', 'per_page', 'q', 'filters', 'expandContext', 'ext', 'field', 'sort', 'sort_direction', 'search_scope']
 
-  var actionHandlers = {
-    // Redundant if we use resources/:id path above:
-    'lookup': { handler: app.resources.findById },
+  const respond = (res, _resp, params) => {
+    var contentType = 'application/ld+json'
+    if (params.ext === 'ntriples') contentType = 'text/plain'
 
-    'searchbytitle': { handler: app.resources.searchByTitle },
-    'search': { handler: app.resources.search, params: standardParams.concat(['filters']) },
-    'aggregations': { handler: app.resources.searchAggregations, params: standardParams.concat(['filters', 'fields']) },
-    'overview': { handler: app.resources.overview },
-    'ntriples': { handler: app.resources.overviewNtriples, contentType: 'text/plain' },
-    'jsonld': { handler: app.resources.overviewJsonld },
-    'byterm': { handler: app.resources.byTerm },
-    'searchold': { handler: app.resources.findByOldId },
-    'byowi': { handler: app.resources.findByOwi },
-    'random': { handler: (v, cb) => app.resources.randomResources(v, cb) }
+    var resp = _resp
+    if (contentType !== 'text/plain') resp = JSON.stringify(_resp, null, 2)
+
+    res.type(contentType)
+    res.status(200).send(resp)
+    return true
   }
 
-  app.get('/api/v1/resources/:id', function (req, res) {
-    var params = gatherParams(req, actionHandlers['lookup'].params || standardParams)
-    params.id = req.params.id
-    app.resources.findById(params, function (_resp) {
-      res.type('application/ld+json')
-      res.status(200).send(JSON.stringify(_resp, null, 2))
-      return true
-    })
+  const handleError = (res, error, params) => {
+    app.logger.error('Resources#handleError:', error)
+
+    var statusCode = 500
+    switch (error.name) {
+      case 'InvalidParameterError':
+        statusCode = 422
+        break
+      case 'NotFoundError':
+        statusCode = 404
+        break
+      default:
+        statusCode = 500
+    }
+    res.status(statusCode).send({ status: statusCode, name: error.name, error: error.message ? error.message : error })
+    return false
+  }
+
+  app.get(`/api/v${VER}/discovery/resources$`, function (req, res) {
+    var params = gatherParams(req, standardParams)
+
+    return app.resources.search(params, { baseUrl: app.baseUrl })
+      .then((resp) => respond(res, resp, params))
+      .catch((error) => handleError(res, error, params))
   })
 
-  app.get('/api/v1/resources', function (req, res) {
-    if (req.query.action) {
-      var action = req.query.action.toLowerCase()
+  app.get(`/api/v${VER}/discovery/resources/aggregations`, function (req, res) {
+    var params = gatherParams(req, standardParams)
 
-      // Error if action invalid:
-      if (Object.keys(actionHandlers).indexOf(action) < 0) {
-        res.type('application/json')
-        res.status(500).send(JSON.stringify({error: 'Invalid Action'}, null, 2))
-      } else {
-        var handlerConfig = null
-        if ((handlerConfig = actionHandlers[action])) {
-          var params = gatherParams(req, handlerConfig.params)
+    return app.resources.aggregations(params, { baseUrl: app.baseUrl })
+      .then((resp) => respond(res, resp, params))
+      .catch((error) => handleError(res, error, params))
+  })
 
-          handlerConfig.handler(params, function (_resp) {
-            res.type(handlerConfig.contentType ? handlerConfig.contentType : 'application/ld+json')
-            res.status(200).send(JSON.stringify(_resp, null, 2))
-            return true
-          })
-        }
-      }
+  app.get(`/api/v${VER}/discovery/resources/aggregation/:field`, function (req, res) {
+    var params = Object.assign({}, gatherParams(req, standardParams), req.params)
 
-    // Error if no action given:
-    } else {
-      res.type('application/json')
-      res.status(500).send(JSON.stringify({error: 'No Action requested'}, null, 2))
+    return app.resources.aggregation(params, { baseUrl: app.baseUrl })
+      .then((resp) => respond(res, resp, params))
+      .catch((error) => handleError(res, error, params))
+  })
+
+  /*
+   * Return items with `deliveryLocation`s matching the supplied barcodes
+   *
+   * For example, to fetch Delivery Locations for item barcodes 12345, 45678, and 78910:
+   *   /api/v${VER}/request/deliveryLocationsByBarcode?barcodes[]=12345&barcodes[]=45678&barcodes=[]=78910
+   */
+  app.get(`/api/v${VER}/request/deliveryLocationsByBarcode`, function (req, res) {
+    var params = gatherParams(req, ['barcodes', 'patronId'])
+
+    var handler = app.resources.deliveryLocationsByBarcode
+
+    return handler(params, { baseUrl: app.baseUrl })
+      .then((resp) => respond(res, resp, params))
+      .catch((error) => handleError(res, error, params))
+  })
+
+  app.get(`/api/v${VER}/discovery/resources/:uri\.:ext?`, function (req, res) {
+    var params = { uri: req.params.uri }
+
+    var handler = app.resources.findByUri
+
+    if (req.params.ext === 'ntriples') {
+      handler = app.resources.overviewNtriples
     }
+
+    return handler(params, { baseUrl: app.baseUrl })
+      .then((responseBody) => respond(res, responseBody, params))
+      .catch((error) => handleError(res, error, params))
   })
 }

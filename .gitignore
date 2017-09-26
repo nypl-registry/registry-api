@@ -1,6 +1,5 @@
 # Logs
-logs
-*.log
+log/*.log
 npm-debug.log*
 
 local.json
@@ -34,3 +33,14 @@ node_modules
 
 # Optional REPL history
 .node_repl_history
+
+# AWS credentials
+.env
+
+# node-lambda build zip file
+build
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
